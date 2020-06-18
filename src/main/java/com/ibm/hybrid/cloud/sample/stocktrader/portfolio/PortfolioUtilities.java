@@ -16,11 +16,9 @@
 
 package com.ibm.hybrid.cloud.sample.stocktrader.portfolio;
 
-import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.ODMClient;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.WatsonClient;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.event.BaseEvent;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Feedback;
-import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.LoyaltyChange;
-import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.ODMLoyaltyRule;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Portfolio;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.StockPurchase;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.WatsonInput;
@@ -28,11 +26,12 @@ import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.WatsonOutput;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.ConnectException;
 import java.text.SimpleDateFormat;
 import java.util.Base64;
 import java.util.Date;
 import java.util.UUID;
-
+import java.util.concurrent.ExecutionException;
 //Logging (JSR 47)
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -43,6 +42,8 @@ import java.sql.SQLException;
 //mpOpenTracing 1.3
 import org.eclipse.microprofile.opentracing.Traced;
 
+import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
 //JMS 2.0
 import javax.jms.DeliveryMode;
 import javax.jms.JMSException;
@@ -64,7 +65,7 @@ import javax.naming.NamingException;
 //Servlet 4.0
 import javax.servlet.http.HttpServletRequest;
 
-
+@ApplicationScoped
 public class PortfolioUtilities {
 	private static Logger logger = Logger.getLogger(PortfolioUtilities.class.getName());
 
@@ -85,7 +86,8 @@ public class PortfolioUtilities {
 
 	private static SimpleDateFormat timestampFormatter = null;
 
-	private static EventStreamsProducer kafkaProducer = null;
+	@Inject
+	private EventStreamsProducer kafkaProducer;
 
 	@Traced
 	private void initialize() throws NamingException {
@@ -109,52 +111,52 @@ public class PortfolioUtilities {
 		}
 	}
 
-	@Traced
-	String invokeODM(ODMClient odmClient, String odmId, String odmPwd, String owner, double overallTotal, String oldLoyalty, HttpServletRequest request) {
-		String loyalty = null;
-		ODMLoyaltyRule input = new ODMLoyaltyRule(overallTotal);
-		try {
-			String credentials = odmId+":"+odmPwd;
-			String basicAuth = "Basic "+Base64.getEncoder().encode(credentials.getBytes());
-
-			//call the LoyaltyLevel business rule to get the current loyalty level of this portfolio
-			logger.info("Calling loyalty-level ODM business rule for "+owner);
-			ODMLoyaltyRule result = odmClient.getLoyaltyLevel(basicAuth, input);
-
-			loyalty = result.determineLoyalty();
-			logger.info("New loyalty level for "+owner+" is "+loyalty);
-
-			if (oldLoyalty == null) return loyalty;
-			if (!oldLoyalty.equalsIgnoreCase(loyalty)) try {
-				logger.info("Change in loyalty level detected.");
-
-				LoyaltyChange message = new LoyaltyChange(owner, oldLoyalty, loyalty);
-	
-				String user = request.getRemoteUser(); //logged-in user
-				if (user != null) message.setId(user);
-	
-				logger.info(message.toString());
-	
-				invokeJMS(message);
-			} catch (JMSException jms) { //in case MQ is not configured, just log the exception and continue
-				logger.warning("Unable to send message to JMS provider.  Continuing without notification of change in loyalty level.");
-				logException(jms);
-				Exception linked = jms.getLinkedException(); //get the nested exception from MQ
-				if (linked != null) logException(linked);
-			} catch (NamingException ne) { //in case MQ is not configured, just log the exception and continue
-				logger.warning("Unable to lookup JMS managed resources from JNDI.  Continuing without notification of change in loyalty level.");
-				logException(ne);
-			} catch (Throwable t) { //in case MQ is not configured, just log the exception and continue
-				logger.warning("An unexpected error occurred.  Continuing without notification of change in loyalty level.");
-				logException(t);
-			}
-		} catch (Throwable t) {
-			logger.warning("Unable to get loyalty level, via "+input.toString()+".  Using cached value instead");
-			logException(t);
-			loyalty = oldLoyalty;
-		}
-		return loyalty;
-	}
+//	@Traced
+//	String invokeODM(ODMClient odmClient, String odmId, String odmPwd, String owner, double overallTotal, String oldLoyalty, HttpServletRequest request) {
+//		String loyalty = null;
+//		ODMLoyaltyRule input = new ODMLoyaltyRule(overallTotal);
+//		try {
+//			String credentials = odmId+":"+odmPwd;
+//			String basicAuth = "Basic "+Base64.getEncoder().encode(credentials.getBytes());
+//
+//			//call the LoyaltyLevel business rule to get the current loyalty level of this portfolio
+//			logger.info("Calling loyalty-level ODM business rule for "+owner);
+//			ODMLoyaltyRule result = odmClient.getLoyaltyLevel(basicAuth, input);
+//
+//			loyalty = result.determineLoyalty();
+//			logger.info("New loyalty level for "+owner+" is "+loyalty);
+//
+//			if (oldLoyalty == null) return loyalty;
+//			if (!oldLoyalty.equalsIgnoreCase(loyalty)) try {
+//				logger.info("Change in loyalty level detected.");
+//
+//				LoyaltyChange message = new LoyaltyChange(owner, oldLoyalty, loyalty);
+//	
+//				String user = request.getRemoteUser(); //logged-in user
+//				if (user != null) message.setId(user);
+//	
+//				logger.info(message.toString());
+//	
+//				invokeJMS(message);
+//			} catch (JMSException jms) { //in case MQ is not configured, just log the exception and continue
+//				logger.warning("Unable to send message to JMS provider.  Continuing without notification of change in loyalty level.");
+//				logException(jms);
+//				Exception linked = jms.getLinkedException(); //get the nested exception from MQ
+//				if (linked != null) logException(linked);
+//			} catch (NamingException ne) { //in case MQ is not configured, just log the exception and continue
+//				logger.warning("Unable to lookup JMS managed resources from JNDI.  Continuing without notification of change in loyalty level.");
+//				logException(ne);
+//			} catch (Throwable t) { //in case MQ is not configured, just log the exception and continue
+//				logger.warning("An unexpected error occurred.  Continuing without notification of change in loyalty level.");
+//				logException(t);
+//			}
+//		} catch (Throwable t) {
+//			logger.warning("Unable to get loyalty level, via "+input.toString()+".  Using cached value instead");
+//			logException(t);
+//			loyalty = oldLoyalty;
+//		}
+//		return loyalty;
+//	}
 
 	@Traced
 	Feedback invokeWatson(WatsonClient watsonClient, String watsonId, String watsonPwd, WatsonInput input) {
@@ -228,8 +230,6 @@ public class PortfolioUtilities {
 		logger.info("Preparing to send a Kafka message");
 
 		try {
-			if (kafkaProducer == null) kafkaProducer = new EventStreamsProducer(kafkaAddress, kafkaTopic);
-
 			Date now = new Date();
 			if (timestampFormatter == null) timestampFormatter = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss.SSS");
 			String when = timestampFormatter.format(now);
@@ -284,6 +284,29 @@ public class PortfolioUtilities {
 			StringWriter writer = new StringWriter();
 			t.printStackTrace(new PrintWriter(writer));
 			logger.info(writer.toString());
+		}
+	}
+	
+	public String createStockQuoteAuthorizationHeader() {
+		// ##TODO create proper authorization headers for BASIC and JWT
+		String credentials = "stock" + ":" + "trader"; 
+		String authorization = "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes());
+		return authorization;
+	}
+	
+	public void publishEvent(BaseEvent event) {
+		try {
+			logger.info("Sending event: " + event);
+			kafkaProducer.produce(event);
+		} catch (ConnectException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (ExecutionException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
 	}
 }

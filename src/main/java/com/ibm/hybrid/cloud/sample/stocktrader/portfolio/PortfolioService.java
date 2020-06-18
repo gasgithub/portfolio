@@ -16,17 +16,21 @@
 
 package com.ibm.hybrid.cloud.sample.stocktrader.portfolio;
 
-import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.ODMClient;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.StockQuoteClient;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.TradeHistoryClient;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.client.WatsonClient;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Feedback;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Portfolio;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.PurchaseTransaction;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.PurchaseState;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Quote;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Stock;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.WatsonInput;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.dao.PortfolioDao;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.dao.PurchaseTransactionDao;
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.dao.StockDao;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.event.BaseEvent;
+import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.event.StockPurchasedEvent;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -43,6 +47,7 @@ import javax.sql.DataSource;
 
 //CDI 2.0
 import javax.inject.Inject;
+import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.context.RequestScoped;
 
 //mpConfig 1.3
@@ -72,11 +77,12 @@ import javax.naming.NamingException;
 
 //Servlet 4.0
 import javax.servlet.http.HttpServletRequest;
-
+import javax.servlet.http.HttpServletResponse;
 //JAX-RS 2.1 (JSR 339)
 import javax.ws.rs.core.Application;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import javax.ws.rs.ApplicationPath;
 import javax.ws.rs.BadRequestException; //400 error
 import javax.ws.rs.Consumes;
@@ -94,7 +100,7 @@ import javax.ws.rs.WebApplicationException;
 @ApplicationPath("/")
 @Path("/")
 @LoginConfig(authMethod = "MP-JWT", realmName = "jwt-jaspi")
-@RequestScoped //enable interceptors like @Transactional (note you need a WEB-INF/beans.xml in your war)
+@ApplicationScoped //enable interceptors like @Transactional (note you need a WEB-INF/beans.xml in your war)
 /** This version stores the Portfolios via JPA to DB2 (or whatever JDBC provider is defined in your server.xml).
  */
 public class PortfolioService extends Application {
@@ -113,25 +119,29 @@ public class PortfolioService extends Application {
 
 	private static SimpleDateFormat dateFormatter = null;
 
-	private PortfolioUtilities utilities = new PortfolioUtilities();
+	@Inject
+	private PortfolioUtilities utilities;
 
 	@Inject
 	private PortfolioDao portfolioDAO;
 
 	@Inject
 	private StockDao stockDAO;
+	
+	@Inject
+	private PurchaseTransactionDao purchaseTransactionDAO;
 
 	private @Inject @RestClient StockQuoteClient stockQuoteClient;
 	private @Inject @RestClient TradeHistoryClient tradeHistoryClient;
-	private @Inject @RestClient ODMClient odmClient;
+
 	private @Inject @RestClient WatsonClient watsonClient;
 
-	private @Inject @ConfigProperty(name = "ODM_ID", defaultValue = "odmAdmin") String odmId;
-	private @Inject @ConfigProperty(name = "ODM_PWD", defaultValue = "odmAdmin") String odmPwd;
 	private @Inject @ConfigProperty(name = "WATSON_ID", defaultValue = "apikey") String watsonId;
 	private @Inject @ConfigProperty(name = "WATSON_PWD") String watsonPwd; //if using an API Key, it goes here
 	private @Inject @ConfigProperty(name = "KAFKA_TOPIC", defaultValue = "stocktrader") String kafkaTopic;
 	private @Inject @ConfigProperty(name = "KAFKA_ADDRESS", defaultValue = "") String kafkaAddress;
+	
+	private @Inject @ConfigProperty(name = "AUTH_METHOD", defaultValue = "BASIC") String authMethod;
 
 	// Override ODM Client URL if secret is configured to provide URL
 	static {
@@ -153,14 +163,14 @@ public class PortfolioService extends Application {
 			logger.info("Trade History URL not found from env var from config map, so defaulting to value in jvm.options: " + System.getProperty(mpUrlPropName));
 		}
 
-		mpUrlPropName = ODMClient.class.getName() + "/mp-rest/url";
-		urlFromEnv = System.getenv("ODM_URL");
-		if ((urlFromEnv != null) && !urlFromEnv.isEmpty()) {
-			logger.info("Using ODM URL from config map: " + urlFromEnv);
-			System.setProperty(mpUrlPropName, urlFromEnv);
-		} else {
-			logger.info("ODM URL not found from env var from config map, so defaulting to value in jvm.options: " + System.getProperty(mpUrlPropName));
-		}
+//		mpUrlPropName = ODMClient.class.getName() + "/mp-rest/url";
+//		urlFromEnv = System.getenv("ODM_URL");
+//		if ((urlFromEnv != null) && !urlFromEnv.isEmpty()) {
+//			logger.info("Using ODM URL from config map: " + urlFromEnv);
+//			System.setProperty(mpUrlPropName, urlFromEnv);
+//		} else {
+//			logger.info("ODM URL not found from env var from config map, so defaulting to value in jvm.options: " + System.getProperty(mpUrlPropName));
+//		}
 
 		mpUrlPropName = WatsonClient.class.getName() + "/mp-rest/url";
 		urlFromEnv = System.getenv("WATSON_URL");
@@ -193,6 +203,7 @@ public class PortfolioService extends Application {
 //	@RolesAllowed({"StockTrader", "StockViewer"}) //Couldn't get this to work; had to do it through the web.xml instead :(
 	public Portfolio[] getPortfolios() throws SQLException {
 
+System.out.println("getPortfolios");
 		logger.fine("Running following SQL: SELECT * FROM Portfolio");
 		List<Portfolio> portfolioList = portfolioDAO.readAllPortfolios();
 		int count = portfolioList.size();
@@ -238,7 +249,7 @@ public class PortfolioService extends Application {
 
 			logger.fine("Running following SQL: INSERT INTO Portfolio VALUES ('"+owner+"', 0.0, 'Basic', 50.0, 0.0, 0, 'Unknown')");
 			
-			if(portfolioDAO.readEvent(owner) == null) {
+			if(portfolioDAO.readPortfolio(owner) == null) {
 				portfolioDAO.createPortfolio(portfolio);
 			} else {
 				logger.warning("Portfolio already exists for: "+owner);
@@ -333,12 +344,12 @@ public class PortfolioService extends Application {
 
 			portfolio.setTotal(overallTotal);
 
-			String loyalty = utilities.invokeODM(odmClient, odmId, odmPwd, owner, overallTotal, oldLoyalty, request);
-			portfolio.setLoyalty(loyalty);
+			// ## TODO checking for loyalty change on get  
+//			String loyalty = utilities.invokeODM(odmClient, odmId, odmPwd, owner, overallTotal, oldLoyalty, request);
+//			portfolio.setLoyalty(loyalty);
 
 			int free = portfolio.getFree();
-			portfolio.setFree(free);
-			portfolio.setNextCommission(free>0 ? 0.0 : utilities.getCommission(loyalty));
+			portfolio.setNextCommission(free>0 ? 0.0 : utilities.getCommission(portfolio.getLoyalty()));
 
 			portfolioDAO.updatePortfolio(portfolio);
 
@@ -351,10 +362,10 @@ public class PortfolioService extends Application {
 		return portfolio;
 	}
 
-	private Portfolio getPortfolioWithoutStocks(String owner, boolean throw404) throws SQLException {
+	private Portfolio getPortfolioWithoutStocks(String owner, boolean throw404)  {
 		logger.fine("Running following SQL: SELECT * FROM Portfolio WHERE owner = '"+owner+"'");
 
-		Portfolio portfolio = portfolioDAO.readEvent(owner);
+		Portfolio portfolio = portfolioDAO.readPortfolio(owner);
 
 		if (portfolio != null) {
 			logger.info("Found portfolio for "+owner);
@@ -393,53 +404,127 @@ public class PortfolioService extends Application {
 	@Produces(MediaType.APPLICATION_JSON)
 	@Transactional(TxType.REQUIRED) //two-phase commit (XA) across JDBC and JMS
 //	@RolesAllowed({"StockTrader"}) //Couldn't get this to work; had to do it through the web.xml instead :(
-	public Portfolio updatePortfolio(@PathParam("owner") String owner, @QueryParam("symbol") String symbol, @QueryParam("shares") int shares, @Context HttpServletRequest request) throws IOException, SQLException {
-		double commission = processCommission(owner); //throws a 404 if not found
+	public Portfolio updatePortfolio(@PathParam("owner") String owner, @QueryParam("symbol") String symbol, @QueryParam("shares") int shares, @Context HttpServletRequest request, @Context HttpServletResponse response) throws IOException, SQLException {
+		//check if portofolio exists
+		Portfolio portfolio = portfolioDAO.readPortfolio(owner);
+		if(portfolio == null) {
+			response.setStatus(Response.Status.BAD_REQUEST.getStatusCode()); 
+			portfolio = new Portfolio(owner);
+			portfolio.setMessage("No such portfolio");
+			return portfolio;
+		}
+		if(checkPendingTransactions(portfolio)) {
+			response.setStatus(Response.Status.BAD_REQUEST.getStatusCode());
+			return portfolio;
+		}
+		
+		// store purchase event
+		PurchaseTransaction pe = new PurchaseTransaction();
+		pe.setOwner(owner);
+		pe.setSymbol(symbol);
+		pe.setShares(shares);
+		pe.setState(PurchaseState.PURCHASE_PENDING);
+		purchaseTransactionDAO.createPurchaseEvent(pe);
+		System.out.println("peid: " + pe.getId());
+		
+		double commission = processCommission(owner, false); //throws a 404 if not found, do not update portfolio yet
 
 		Stock stock = new Stock();
 		stock.setCommission(commission);
 		stock.setSymbol(symbol);
 		stock.setShares(shares);
 
-		Portfolio portfolio = portfolioDAO.readEvent(owner);
-		if (portfolio != null) {
-			stock.setPortfolio(portfolio);
-		} else {
-			throw new NotFoundException("No such portfolio: "+owner); //send back a 404
+		
+		stock.setPortfolio(portfolio);
+		
+		// calculate new total
+		double newTotal = calculateTotal(portfolio, stock);
+		if(newTotal == -1) {
+			// stock quote service not available
+			// update portfolio and dont send events
+			logger.info("Stock quote service not available, failing.");
+			
+			// #### send event
+			pe.setState(PurchaseState.PURCHASE_FAILED);
+			purchaseTransactionDAO.updatePurchaseEvent(pe);
+			portfolio.setMessage("Stock quote service not available, failing");
+			response.setStatus(Response.Status.BAD_REQUEST.getStatusCode());
+			return portfolio;
 		}
-        
-		logger.fine("Running following SQL: SELECT * FROM Stock WHERE owner = '"+owner+"' and symbol = '"+symbol+"'");
-		List<Stock> results = stockDAO.readStockByOwnerAndSymbol(owner, symbol);
+		else {
+			// normal flow
+			StockPurchasedEvent spe = new StockPurchasedEvent();
+			spe.setType(BaseEvent.TYPE_PURCHASE);
+			spe.setId("" + pe.getId());
+			spe.setOwner(pe.getOwner());
+			spe.setSymbol(pe.getSymbol());
+			spe.setShares(pe.getShares());
+			spe.setOverallTotal(newTotal);
+			spe.setLoyalty(portfolio.getLoyalty());
+			utilities.publishEvent(spe);
+		}
+
+		portfolio.setMessage("Transaction placed, waiting for processing");
+		return portfolio;
+	}
+
+	private boolean checkPendingTransactions(Portfolio portfolio) {
+		PurchaseTransaction findByOwnerInProgress = purchaseTransactionDAO.findByOwnerInProgress(portfolio.getOwner());
+		if(findByOwnerInProgress != null) {
+			portfolio.setMessage("Transaction already pending in " + findByOwnerInProgress.getState());
+			return true;
+		}
+		return false;
+	}
+	@Transactional
+	public void onAcceptTransactions(String owner) {
+		logger.info("onAcceptTransactions: " + owner);
+		PurchaseTransaction transaction = purchaseTransactionDAO.findByOwnerInProgress(owner);
+		logger.info( "transaction: " + transaction);
+		Portfolio portfolio = portfolioDAO.readPortfolio(owner);
+		logger.info("portfolio: " + portfolio);
+		
+		transaction.setState(PurchaseState.PURCHASE_COMPLETED);
+		purchaseTransactionDAO.updatePurchaseEvent(transaction);
+		
+		double commission = processCommission(owner, true); //throws a 404 if not found, do not update portfolio yet
+
+		Stock stock = new Stock();
+		stock.setCommission(commission);
+		stock.setSymbol(transaction.getSymbol());
+		stock.setShares(transaction.getShares());
+		stock.setPortfolio(portfolio);
+
+		List<Stock> results = stockDAO.readStockByOwnerAndSymbol(owner, transaction.getSymbol());
 
 		if (!results.isEmpty()) { //row exists
 			stock = results.get(0);
 			int oldShares = stock.getShares();
 			double oldCommission = stock.getCommission();
 
-			int newShares = oldShares+shares;
+			int newShares = oldShares+transaction.getShares();
 			double newCommission = oldCommission+commission;
 			if (newShares > 0) {
-				logger.fine("Running following SQL: UPDATE Stock SET shares = "+newShares+", commission = "+newCommission+" WHERE owner = '"+owner+"' AND symbol = '"+symbol+"'");
 				stock.setShares(newShares);
 				stock.setCommission(newCommission);
 				//getPortfolio will fill in the price, date and total
+				stockDAO.updateStock(stock);
 			} else {
-				logger.fine("Running following SQL: DELETE FROM Stock WHERE owner = '"+owner+"' AND symbol = '"+symbol+"'");
+				logger.fine("Running following SQL: DELETE FROM Stock WHERE owner = '"+owner+"' AND symbol = '"+transaction.getSymbol()+"'");
 				stockDAO.deleteStock(stock);
 			}
 		} else {
-			logger.fine("Running following SQL: INSERT INTO Stock (owner, symbol, shares, commission) VALUES ('"+owner+"', '"+symbol+"', "+shares+", "+commission+")");
+			logger.fine("Running following SQL: INSERT INTO Stock (owner, symbol, shares, commission) VALUES ('"+owner+"', '"+transaction.getSymbol()+"', "+transaction.getShares()+", "+commission+")");
 			stockDAO.createStock(stock);
 			//getPortfolio will fill in the price, date and total
 		}
 
 		//getPortfolio will fill in the overall total and loyalty, and commit or rollback the transaction
 		logger.info("Refreshing portfolio for "+owner);
-		portfolio = getPortfolio(owner, request);
+		//portfolio = getPortfolio(owner, request);
 
-		utilities.invokeKafka(portfolio, symbol, shares, commission, kafkaAddress, kafkaTopic);
-
-		return portfolio;
+		//utilities.invokeKafka(portfolio, symbol, shares, commission, kafkaAddress, kafkaTopic);
+		
 	}
 
 	@DELETE
@@ -485,10 +570,9 @@ public class PortfolioService extends Application {
 		return feedback;
 	}
 
-	private double processCommission(String owner) throws SQLException {
+	private double processCommission(String owner, boolean updatePortfolio) {
 		logger.info("Getting loyalty level for "+owner);
 		Portfolio portfolio = getPortfolioWithoutStocks(owner, true); //throws a 404 if not found
-		portfolioDAO.updatePortfolio(portfolio);
 		String loyalty = portfolio.getLoyalty();
 	
 		double commission = utilities.getCommission(loyalty);
@@ -510,6 +594,9 @@ public class PortfolioService extends Application {
 			logger.info("Charging commission of $"+commission+" for "+owner);
 			portfolio.setCommissions(commissions);
 			portfolio.setBalance(balance);
+		}
+		if(updatePortfolio) {
+			portfolioDAO.updatePortfolio(portfolio);
 		}
 
 		logger.info("Returning a commission of $"+commission);
@@ -547,11 +634,67 @@ public class PortfolioService extends Application {
 			logger.warning("WATSON_ID config property is null");
 		}
 
-		if (odmId != null) {
-			logger.info("Initialization complete");
-		} else {
-			logger.warning("ODM_ID config property is null");
-		}
 		initialized = true;
+	}
+	
+	private double calculateTotal(Portfolio portfolio, Stock newStock) {
+		double overallTotal = 0;
+				
+		
+		List<Stock> results = stockDAO.readStockByOwner(portfolio.getOwner());
+
+		int count = 0;
+		logger.fine("Iterating over results");
+		for (Stock stock : results) {
+			count++;
+
+			String symbol = stock.getSymbol();
+			int shares = stock.getShares();
+			if(symbol.equals(newStock.getSymbol())) {
+				shares += newStock.getShares();
+			}
+
+			double total = 0;
+			double price = 0;
+
+			try {
+				//call the StockQuote microservice to get the current price of this stock
+				logger.info("Calling stock-quote microservice for "+symbol);
+
+				String jwt = utilities.createStockQuoteAuthorizationHeader();
+				Quote quote = stockQuoteClient.getStockQuote(jwt, symbol);
+
+				price = quote.getPrice();
+
+				total = shares * price;
+			} catch (Throwable t) {
+				logger.warning("Unable to get stock quote. Return");
+				return -1;
+			}
+
+			if (price != -1) //-1 is the marker for not being able to get the stock quote.  But don't actually add that value
+				overallTotal += total;
+
+		}
+		logger.info("Processed "+count+" stocks for "+ portfolio.getOwner());
+
+		return overallTotal;
+
+	}
+
+	@Transactional
+	public void updateLoyalty(String owner, String newLoyalty) {
+		Portfolio portfolio = portfolioDAO.readPortfolio(owner);
+		portfolio.setLoyalty(newLoyalty);
+		portfolioDAO.updatePortfolio(portfolio);
+	}
+	@Transactional
+	public void updatePurchaseTransaction(String owner, PurchaseState loyaltyChangePending) {
+		PurchaseTransaction purchaseTransaction = purchaseTransactionDAO.findByOwnerInProgress(owner);
+		if(purchaseTransaction != null) {
+			purchaseTransaction.setState(loyaltyChangePending);
+		}
+		purchaseTransactionDAO.updatePurchaseEvent(purchaseTransaction);
+		
 	}
 }

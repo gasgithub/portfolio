@@ -24,7 +24,6 @@ import java.util.List;
 
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Stock;
 
-@RequestScoped
 public class StockDao {
 
     @PersistenceContext(name = "jpa-unit")

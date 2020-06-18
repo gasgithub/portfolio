@@ -16,6 +16,7 @@
 
 package com.ibm.hybrid.cloud.sample.stocktrader.portfolio.dao;
 
+import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.context.RequestScoped;
 
 import javax.persistence.EntityManager;
@@ -24,7 +25,6 @@ import java.util.List;
 
 import com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json.Portfolio;
 
-@RequestScoped
 public class PortfolioDao {
 
     @PersistenceContext(name = "jpa-unit")
@@ -34,7 +34,7 @@ public class PortfolioDao {
         em.persist(portfolio);
     }
 
-    public Portfolio readEvent(String owner) {
+    public Portfolio readPortfolio(String owner) {
         return em.find(Portfolio.class, owner);
     }
 

@@ -59,8 +59,19 @@ public class Portfolio {
     @JsonbTransient
     @OneToMany(mappedBy = "portfolio", cascade = CascadeType.ALL)
     private List<Stock> stockList = new ArrayList<Stock>();
+    
+    @Transient
+    private String message = "";
 
-    public Portfolio() { //default constructor
+    public String getMessage() {
+		return message;
+	}
+
+	public void setMessage(String message) {
+		this.message = message;
+	}
+
+	public Portfolio() { //default constructor
     }
 
     public Portfolio(String initialOwner) { //primary key constructor
