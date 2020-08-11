@@ -1,5 +1,7 @@
 package com.ibm.hybrid.cloud.sample.stocktrader.portfolio.json;
 
+import java.util.Date;
+
 import javax.persistence.Entity;
 import javax.persistence.EnumType;
 import javax.persistence.Enumerated;
@@ -8,11 +10,15 @@ import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.NamedQuery;
 import javax.persistence.Table;
+import javax.persistence.Temporal;
+import javax.persistence.TemporalType;
 
 @Entity
 @Table
 @NamedQuery(name = "PurchaseTransaction.findByOwnerInProgress", 
 		query = "select pe from PurchaseTransaction pe where pe.owner = :owner and pe.state in :pendingStates")
+@NamedQuery(name = "PurchaseTransaction.findByTimeoutInProgress", 
+query = "select pe from PurchaseTransaction pe where pe.state in :pendingStates and pe.dateCreated < :dateToCheck")
 		
 public class PurchaseTransaction { 
 
@@ -28,6 +34,9 @@ public class PurchaseTransaction {
 	private String symbol;
 	
 	private int shares;
+	
+	@Temporal(TemporalType.TIMESTAMP)
+	private Date dateCreated = new Date();
 
 	public long getId() {
 		return id;
@@ -67,6 +76,14 @@ public class PurchaseTransaction {
 
 	public void setShares(int shares) {
 		this.shares = shares;
+	}
+
+	public Date getDateCreated() {
+		return dateCreated;
+	}
+
+	public void setDateCreated(Date dateCreated) {
+		this.dateCreated = dateCreated;
 	}
 	
 	

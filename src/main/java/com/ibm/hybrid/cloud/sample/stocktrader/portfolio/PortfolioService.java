@@ -693,8 +693,12 @@ System.out.println("getPortfolios");
 		PurchaseTransaction purchaseTransaction = purchaseTransactionDAO.findByOwnerInProgress(owner);
 		if(purchaseTransaction != null) {
 			purchaseTransaction.setState(loyaltyChangePending);
+			purchaseTransactionDAO.updatePurchaseEvent(purchaseTransaction);
 		}
-		purchaseTransactionDAO.updatePurchaseEvent(purchaseTransaction);
+		else {
+			logger.warning("no transaction to update for owneer: " + owner);
+		}
+
 		
 	}
 }

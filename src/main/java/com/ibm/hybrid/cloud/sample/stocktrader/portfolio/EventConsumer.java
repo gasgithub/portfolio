@@ -50,7 +50,7 @@ public class EventConsumer {
 				logger.info("Received: " + type + " Notification enabled: " + NOTIFICATION_ENABLED);
 				LoyaltyChangeEvent loyaltyChangeEvent = jsonb.fromJson(eventAsString, LoyaltyChangeEvent.class);
 				if(NOTIFICATION_ENABLED) {
-					// change transaction status
+					// change transaction status, not wait for JMS as it is not enabled
 					portfolioService.updatePurchaseTransaction(event.getOwner(), PurchaseState.LOYALTY_CHANGE_PENDING);
 				}
 				else {
@@ -71,11 +71,21 @@ public class EventConsumer {
 				// handle 
 				// change status
 				logger.info("handle: " + type);
+				LoyaltyChangeEvent loyaltyChangeEvent = jsonb.fromJson(eventAsString, LoyaltyChangeEvent.class);
+				portfolioService.updateLoyalty(loyaltyChangeEvent.getOwner(), loyaltyChangeEvent.getNewLoyalty());
+				portfolioService.onAcceptTransactions(event.getOwner());
 			}
 			else if(type.equals(BaseEvent.TYPE_LOYALTY_CHANGED_FAILED)) {
 				// handle 
 				// rollback
 				logger.info("handle: " + type);
+				portfolioService.updatePurchaseTransaction(event.getOwner(), PurchaseState.PURCHASE_FAILED);
+			}
+			else if(type.equals(BaseEvent.TYPE_LOYALTY_CHECK_FAILED)) {
+				// handle 
+				// rollback
+				logger.info("handle: " + type);
+				portfolioService.updatePurchaseTransaction(event.getOwner(), PurchaseState.PURCHASE_FAILED);
 			}
 			else if(type.equals(BaseEvent.TYPE_PURCHASE)) {
 				// handle 
